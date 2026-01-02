@@ -1,0 +1,204 @@
+# =============================================================================
+# Mac Pro Rack Fan Control Configuration
+# =============================================================================
+# This file allows tuning fan curves and system parameters without
+# modifying the main Python script.
+#
+# Copy to /etc/fan-control/config.yaml for production use.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# System Settings
+# -----------------------------------------------------------------------------
+system:
+  # SMC sysfs base path (Mac Pro Rack specific)
+  smc_base: "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/PNP0A08:00/device:1f/APP0001:00"
+
+  # UDP listener for GPU temperatures from Windows VM
+  udp_host: "0.0.0.0"
+  udp_port: 9999
+
+  # How often to poll and update fans (seconds)
+  poll_interval: 2.0
+
+  # GPU data considered stale after this many seconds
+  gpu_stale_timeout: 10.0
+
+  # Log file location (must be writable by service user)
+  log_file: "/var/log/fan-control/fan-control.log"
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+
+# -----------------------------------------------------------------------------
+# Safety Settings
+# -----------------------------------------------------------------------------
+safety:
+  # EMERGENCY: If ANY temp exceeds this, ALL fans go to 100%
+  emergency_temp: 85.0
+
+  # Default temps assumed when sensors fail/stale
+  default_cpu_temp: 50.0
+  default_gpu_temp: 60.0
+
+  # Minimum fan speed percentage (never go below this)
+  min_fan_percent: 20.0
+
+# -----------------------------------------------------------------------------
+# Hysteresis Settings (prevents fan hunting/oscillation)
+# -----------------------------------------------------------------------------
+hysteresis:
+  # Degrees temperature must RISE before fan speeds up
+  up: 2.0
+
+  # Degrees temperature must FALL before fan slows down
+  down: 2.0
+
+# -----------------------------------------------------------------------------
+# Fan Hardware Configuration
+# -----------------------------------------------------------------------------
+# DO NOT MODIFY unless you have different hardware!
+fans:
+  # Fan 1: Rear Blower (Exhaust)
+  1:
+    name: "Rear Blower"
+    min_rpm: 500
+    max_rpm: 1200
+    zone: "exhaust"
+
+  # Fan 2: Left Front (CPU Zone Intake)
+  2:
+    name: "Left Front (CPU)"
+    min_rpm: 500
+    max_rpm: 2500
+    zone: "cpu"
+
+  # Fan 3: Middle Front (GPU 2 Zone Intake)
+  # Cools GPU at PCI 0000:14:00 (nvidia-smi index 1)
+  3:
+    name: "Middle Front (GPU2)"
+    min_rpm: 500
+    max_rpm: 2500
+    zone: "gpu2"
+
+  # Fan 4: Right Front (GPU 1 Zone Intake)
+  # Cools GPU at PCI 0000:fb:00 (nvidia-smi index 0)
+  4:
+    name: "Right Front (GPU1)"
+    min_rpm: 500
+    max_rpm: 2500
+    zone: "gpu1"
+
+# -----------------------------------------------------------------------------
+# Zone Bleed-Over Weights
+# -----------------------------------------------------------------------------
+# Hot air flows from front to back, and GPUs share heat via NVLink.
+# These weights control how much each zone responds to other zones' temps.
+#
+# Format: zone_source: weight (0.0 to 1.0)
+# Weights for each fan should sum to 1.0
+zone_weights:
+  # Fan 2 (CPU Zone): Primary CPU, secondary GPU spillover
+  fan2:
+    cpu: 0.80
+    gpu_max: 0.20  # Max of both GPU curves
+
+  # Fan 3 (GPU2 Zone): Primary GPU1, secondary GPU0, tertiary CPU
+  fan3:
+    gpu1: 0.70     # Primary - its assigned GPU
+    gpu0: 0.20     # NVLink heat sharing
+    cpu: 0.10      # Some CPU influence
+
+  # Fan 4 (GPU1 Zone): Primary GPU0, secondary GPU1, tertiary CPU
+  fan4:
+    gpu0: 0.70     # Primary - its assigned GPU
+    gpu1: 0.20     # NVLink heat sharing
+    cpu: 0.10      # Some CPU influence
+
+  # Fan 1 (Blower): Always MAX of all zones
+  fan1:
+    mode: "max_all"
+
+# -----------------------------------------------------------------------------
+# Temperature Curves
+# -----------------------------------------------------------------------------
+# Format: [temperature_celsius, fan_percentage]
+# Interpolation between points is linear.
+# Ensure first point covers idle temps and last point is at/above 100%
+
+curves:
+  # CPU curve for Intel Xeon W-3245
+  # Adapted from user's 14900K curve (Xeon runs cooler)
+  cpu:
+    - [30.0, 20.0]   # Idle - minimum fan speed
+    - [40.0, 30.0]   # Light load
+    - [50.0, 45.0]   # Moderate load
+    - [60.0, 80.0]   # Heavy load
+    - [65.0, 90.0]   # Sustained heavy
+    - [80.0, 100.0]  # Thermal throttle approaching
+
+  # GPU curve for NVIDIA RTX 3090
+  # 3090s run hotter (83C normal) vs 5090 (63C)
+  # Adjusted from user's 5090 curve
+  gpu:
+    - [35.0, 20.0]   # Idle - keep minimum airflow
+    - [50.0, 30.0]   # Desktop/light GPU
+    - [65.0, 50.0]   # Gaming/moderate
+    - [75.0, 75.0]   # Heavy rendering
+    - [83.0, 100.0]  # Thermal limit
+
+# -----------------------------------------------------------------------------
+# Advanced: Custom Curve Profiles
+# -----------------------------------------------------------------------------
+# Define additional curves for specific workloads
+# Switch with: fan-controller.py --profile rendering
+profiles:
+  # Default profile (above curves)
+  default:
+    description: "Balanced noise/cooling"
+    cpu_curve: "cpu"
+    gpu_curve: "gpu"
+
+  # Silent profile for light work
+  silent:
+    description: "Prioritize silence over cooling"
+    cpu_curve:
+      - [30.0, 20.0]
+      - [50.0, 25.0]
+      - [60.0, 40.0]
+      - [70.0, 70.0]
+      - [80.0, 100.0]
+    gpu_curve:
+      - [35.0, 20.0]
+      - [60.0, 30.0]
+      - [75.0, 60.0]
+      - [83.0, 100.0]
+
+  # Performance profile for rendering
+  rendering:
+    description: "Aggressive cooling for sustained loads"
+    cpu_curve:
+      - [30.0, 30.0]
+      - [40.0, 50.0]
+      - [50.0, 70.0]
+      - [60.0, 90.0]
+      - [70.0, 100.0]
+    gpu_curve:
+      - [35.0, 30.0]
+      - [50.0, 50.0]
+      - [60.0, 70.0]
+      - [70.0, 90.0]
+      - [80.0, 100.0]
+
+# -----------------------------------------------------------------------------
+# Monitoring & Alerts (Optional)
+# -----------------------------------------------------------------------------
+monitoring:
+  # Enable prometheus metrics endpoint
+  prometheus_enabled: false
+  prometheus_port: 9100
+
+  # Alert thresholds (log warnings)
+  alert_cpu_temp: 75.0
+  alert_gpu_temp: 80.0
+
+  # Stats logging interval (0 to disable)
+  stats_interval: 60  # Log stats every 60 seconds

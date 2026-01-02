@@ -1,0 +1,42 @@
+[Unit]
+Description=Mac Pro Rack Advanced Fan Control System
+Documentation=https://github.com/user/mac-pro-fan-control
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/fan-control/fan-controller.py
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+
+# Run as root (required for sysfs access)
+User=root
+Group=root
+
+# Working directory
+WorkingDirectory=/opt/fan-control
+
+# Environment
+Environment="PYTHONUNBUFFERED=1"
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fan-controller
+
+# Security hardening
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/sys/devices/LNXSYSTM:00/LNXSYBUS:00/PNP0A08:00/device:1f/APP0001:00
+ReadWritePaths=/var/log/fan-control
+
+# Resource limits
+MemoryMax=100M
+CPUQuota=10%
+
+[Install]
+WantedBy=multi-user.target
