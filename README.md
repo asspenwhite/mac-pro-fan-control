@@ -87,7 +87,7 @@ Hot air flows from front to back, and multi-GPU setups (especially with NVLink) 
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/mac-pro-fan-control.git
+git clone https://github.com/asspenwhite/mac-pro-fan-control.git
 cd mac-pro-fan-control
 
 # Run installer (as root)

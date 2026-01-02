@@ -1,6 +1,6 @@
 [Unit]
 Description=Mac Pro Rack Advanced Fan Control System
-Documentation=https://github.com/user/mac-pro-fan-control
+Documentation=https://github.com/asspenwhite/mac-pro-fan-control
 After=network.target
 Wants=network.target
 
