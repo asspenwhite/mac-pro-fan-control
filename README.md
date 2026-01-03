@@ -5,13 +5,15 @@ Advanced per-zone fan control system for Apple Mac Pro 2019 (Rack or Tower) runn
 ## Features
 
 - **Per-Zone Fan Control** - Independent control of each intake fan based on thermal zones
-- **GPU Temperature Integration** - Receives GPU temps from Windows/Linux VMs with GPU passthrough
+- **GPU Fan Follow Mode** - Chassis fans match GPU fan speeds for optimal cooling during benchmarks
+- **GPU Temperature Integration** - Receives GPU temps and fan speeds from Windows/Linux VMs
 - **Zone Bleed-Over** - Accounts for thermal cross-contamination between zones (e.g., NVLink heat sharing)
 - **Configurable Fan Curves** - Linear interpolation between temperature/speed points
 - **Hysteresis** - Prevents rapid fan speed oscillation
 - **Emergency Override** - All fans to 100% if any temperature exceeds threshold
 - **Safe Defaults** - Falls back to conservative speeds if sensor data is stale
 - **Systemd Integration** - Runs as a managed service with automatic restart
+- **Fast Response** - 0.5s poll interval for quick thermal response
 
 ## Architecture
 
@@ -24,23 +26,23 @@ Advanced per-zone fan control system for Apple Mac Pro 2019 (Rack or Tower) runn
            │                        │                           │
            │                        │                           ▼
     {"gpu0_temp": 65,        CPU temp from          ┌─────────────────────────┐
-     "gpu1_temp": 67}         /sys/class/hwmon      │   Mac Pro Fan Zones     │
-                                                    │                         │
-                                                    │  [Fan 1] Rear Blower    │
+     "gpu1_temp": 67,         /sys/class/hwmon      │   Mac Pro Fan Zones     │
+     "gpu0_fan": 45,                                │                         │
+     "gpu1_fan": 50}                                │  [Fan 1] Rear Blower    │
                                                     │    └─ Apple Auto Mode   │
                                                     │                         │
-                                                    │  [Fan 2] Left Front     │
-                                                    │    └─ 80% CPU + 20% GPU │
+                                                    │  [Fan 2] Right Front    │
+                                                    │    └─ GPU0 Zone         │
                                                     │                         │
                                                     │  [Fan 3] Middle Front   │
-                                                    │    └─ GPU Zone 2        │
+                                                    │    └─ GPU1 Zone         │
                                                     │                         │
-                                                    │  [Fan 4] Right Front    │
-                                                    │    └─ GPU Zone 1        │
+                                                    │  [Fan 4] Left Front     │
+                                                    │    └─ CPU Zone          │
                                                     └─────────────────────────┘
 ```
 
-### Fan Layout (Mac Pro Rack - Rear View)
+### Fan Layout (Mac Pro Rack - Rear View, Verified 2026-01-02)
 
 ```
            REAR (exhaust)
@@ -49,21 +51,23 @@ Advanced per-zone fan control system for Apple Mac Pro 2019 (Rack or Tower) runn
     │                         │
     │   GPU0        GPU1      │  ← PCIe slots (e.g., RTX 3090 NVLink)
     │                         │
-    │  [Fan 2]  [Fan 3]  [Fan 4]  ← Intake fans (manual control)
-    │   CPU     GPU2     GPU1  │
+    │  [Fan 4]  [Fan 3]  [Fan 2]  ← Intake fans (manual control)
+    │   CPU     GPU1     GPU0  │
     └─────────────────────────┘
            FRONT (intake)
 ```
+
+**Note:** Fan numbering in SMC doesn't match physical left-to-right order. Verified by physical testing.
 
 ### Zone Bleed-Over Weights
 
 Hot air flows from front to back, and multi-GPU setups (especially with NVLink) share heat:
 
-| Fan | Primary Zone | Secondary | Tertiary |
-|-----|--------------|-----------|----------|
-| Fan 2 (CPU) | 80% CPU | 20% max(GPU) | - |
-| Fan 3 (GPU2) | 70% GPU1 | 20% GPU0 | 10% CPU |
-| Fan 4 (GPU1) | 70% GPU0 | 20% GPU1 | 10% CPU |
+| Fan | Zone | Primary | Secondary | Tertiary |
+|-----|------|---------|-----------|----------|
+| Fan 2 | GPU0 (Right) | 70% GPU0 | 20% GPU1 | 10% CPU |
+| Fan 3 | GPU1 (Middle) | 70% GPU1 | 20% GPU0 | 10% CPU |
+| Fan 4 | CPU (Left) | 80% CPU | 20% max(GPU) | - |
 
 ## Requirements
 
@@ -154,6 +158,21 @@ safety:
 hysteresis:
   up: 2.0    # Temp must rise 2C before speeding up
   down: 2.0  # Temp must fall 2C before slowing down
+
+# GPU Fan Follow Mode (default: enabled)
+# When enabled, chassis fans match GPU fan speeds instead of using temp curves
+system:
+  gpu_fan_follow_mode: true
+  poll_interval: 0.5  # Seconds between updates
+```
+
+### GPU Fan Follow Mode
+
+When `gpu_fan_follow_mode: true` (default), the chassis fans directly follow the GPU fan speeds reported by nvidia-smi, with zone weights still applied. This provides better cooling correlation during GPU-intensive workloads like benchmarks or gaming, since the GPU's own fan controller knows best what cooling is needed.
+
+The Windows sender now transmits both temperature AND fan speed:
+```json
+{"gpu0_temp": 65, "gpu1_temp": 67, "gpu0_fan": 45, "gpu1_fan": 50}
 ```
 
 ## Usage
