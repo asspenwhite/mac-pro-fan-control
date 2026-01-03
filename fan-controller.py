@@ -3,11 +3,11 @@
 Advanced Per-Zone Fan Control System for Mac Pro Rack 2019
 ============================================================
 
-Hardware Configuration:
+Hardware Configuration (verified 2026-01-02):
 - Fan 1: Rear Blower (500-1200 RPM) - Exhaust, left in Apple automatic mode
-- Fan 2: Left Front (500-2500 RPM) - CPU Zone intake
-- Fan 3: Middle Front (500-2500 RPM) - GPU 2 Zone intake (3090 #2, PCI 0000:14:00)
-- Fan 4: Right Front (500-2500 RPM) - GPU 1 Zone intake (3090 #1, PCI 0000:fb:00)
+- Fan 2: Right Front (500-2500 RPM) - GPU 0 Zone intake (3090 #1, PCI 0000:fb:00)
+- Fan 3: Middle Front (500-2500 RPM) - GPU 1 Zone intake (3090 #2, PCI 0000:14:00)
+- Fan 4: Left Front (500-2500 RPM) - CPU Zone intake
 
 Thermal Dynamics:
 - Front fans push cool air IN
@@ -17,9 +17,9 @@ Thermal Dynamics:
 
 Zone Bleed-Over Logic:
 - Fan 1 (Blower): Apple automatic control (not managed by this script)
-- Fan 2 (CPU): 80% CPU curve + 20% max(GPU curves)
-- Fan 3 (GPU2): 70% GPU1 curve + 20% GPU0 curve + 10% CPU curve
-- Fan 4 (GPU1): 70% GPU0 curve + 20% GPU1 curve + 10% CPU curve
+- Fan 2 (GPU0): 70% GPU0 curve + 20% GPU1 curve + 10% CPU curve
+- Fan 3 (GPU1): 70% GPU1 curve + 20% GPU0 curve + 10% CPU curve
+- Fan 4 (CPU): 80% CPU curve + 20% max(GPU curves)
 """
 
 import json
@@ -96,8 +96,11 @@ class Config:
     UDP_HOST = "0.0.0.0"
     UDP_PORT = 9999
 
+    # GPU Fan Follow Mode - use GPU fan speed instead of temperature curves
+    GPU_FAN_FOLLOW_MODE = True
+
     # Timing
-    POLL_INTERVAL = 2.0  # seconds
+    POLL_INTERVAL = 0.5  # seconds (faster response to GPU fan changes)
     GPU_STALE_TIMEOUT = 10.0  # seconds
 
     # Hysteresis
@@ -109,12 +112,12 @@ class Config:
     DEFAULT_CPU_TEMP = 50.0  # Assumed if read fails
     DEFAULT_GPU_TEMP = 60.0  # Assumed if data stale
 
-    # Fan configurations
+    # Fan configurations (verified 2026-01-02)
     # Fan 1 (Rear Blower) is left in Apple automatic mode - not controlled here
     FANS = {
-        2: FanConfig("Left Front (CPU)", 2, 500, 2500, min_percent=20.0),
-        3: FanConfig("Middle Front (GPU2)", 3, 500, 2500, min_percent=20.0),
-        4: FanConfig("Right Front (GPU1)", 4, 500, 2500, min_percent=20.0),
+        2: FanConfig("Right Front (GPU0)", 2, 500, 2500, min_percent=20.0),
+        3: FanConfig("Middle Front (GPU1)", 3, 500, 2500, min_percent=20.0),
+        4: FanConfig("Left Front (CPU)", 4, 500, 2500, min_percent=20.0),
     }
 
     # Thermal curves (temperature -> percentage)
@@ -137,15 +140,15 @@ class Config:
         (83.0, 100.0),
     ])
 
-    # Zone bleed-over weights
+    # Zone bleed-over weights (verified 2026-01-02)
     # Fan 1 (Rear Blower) uses Apple automatic control
     ZONE_WEIGHTS = {
-        # Fan 2 (CPU Zone): 80% CPU, 20% max GPU
-        2: {'cpu': 0.80, 'gpu_max': 0.20},
-        # Fan 3 (GPU2 Zone): 70% GPU1, 20% GPU0, 10% CPU
+        # Fan 2 (GPU0 Zone): 70% GPU0, 20% GPU1, 10% CPU
+        2: {'gpu0': 0.70, 'gpu1': 0.20, 'cpu': 0.10},
+        # Fan 3 (GPU1 Zone): 70% GPU1, 20% GPU0, 10% CPU
         3: {'gpu1': 0.70, 'gpu0': 0.20, 'cpu': 0.10},
-        # Fan 4 (GPU1 Zone): 70% GPU0, 20% GPU1, 10% CPU
-        4: {'gpu0': 0.70, 'gpu1': 0.20, 'cpu': 0.10},
+        # Fan 4 (CPU Zone): 80% CPU, 20% max GPU
+        4: {'cpu': 0.80, 'gpu_max': 0.20},
     }
 
 
@@ -224,7 +227,7 @@ class CPUTempReader:
 
 
 class GPUTempReceiver:
-    """Receive GPU temperatures via UDP from Windows VM."""
+    """Receive GPU temperatures and fan speeds via UDP from Windows VM."""
 
     def __init__(self, host: str, port: int, stale_timeout: float):
         self.host = host
@@ -235,6 +238,8 @@ class GPUTempReceiver:
         self._lock = threading.Lock()
         self._gpu0_temp: Optional[float] = None
         self._gpu1_temp: Optional[float] = None
+        self._gpu0_fan: Optional[float] = None  # Fan speed percentage
+        self._gpu1_fan: Optional[float] = None  # Fan speed percentage
         self._last_update: float = 0.0
 
         self._socket: Optional[socket.socket] = None
@@ -275,7 +280,7 @@ class GPUTempReceiver:
                     self.logger.error(f"UDP receive error: {e}")
 
     def _process_packet(self, data: bytes, addr: tuple):
-        """Process a received temperature packet."""
+        """Process a received temperature and fan speed packet."""
         try:
             payload = json.loads(data.decode('utf-8'))
 
@@ -284,9 +289,13 @@ class GPUTempReceiver:
                     self._gpu0_temp = float(payload['gpu0_temp'])
                 if 'gpu1_temp' in payload:
                     self._gpu1_temp = float(payload['gpu1_temp'])
+                if 'gpu0_fan' in payload:
+                    self._gpu0_fan = float(payload['gpu0_fan'])
+                if 'gpu1_fan' in payload:
+                    self._gpu1_fan = float(payload['gpu1_fan'])
                 self._last_update = time.time()
 
-            self.logger.debug(f"Received from {addr}: GPU0={self._gpu0_temp}, GPU1={self._gpu1_temp}")
+            self.logger.debug(f"Received from {addr}: GPU0={self._gpu0_temp}C/{self._gpu0_fan}%, GPU1={self._gpu1_temp}C/{self._gpu1_fan}%")
 
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             self.logger.warning(f"Invalid packet from {addr}: {e}")
@@ -299,6 +308,15 @@ class GPUTempReceiver:
         with self._lock:
             is_stale = (time.time() - self._last_update) > self.stale_timeout
             return self._gpu0_temp, self._gpu1_temp, is_stale
+
+    def get_fan_speeds(self) -> Tuple[Optional[float], Optional[float], bool]:
+        """
+        Get GPU fan speeds.
+        Returns: (gpu0_fan_pct, gpu1_fan_pct, is_stale)
+        """
+        with self._lock:
+            is_stale = (time.time() - self._last_update) > self.stale_timeout
+            return self._gpu0_fan, self._gpu1_fan, is_stale
 
 
 # =============================================================================
@@ -446,11 +464,11 @@ class ZoneController:
     """
     Manages thermal zones and calculates fan speeds.
 
-    Zone assignments:
-    - Fan 2 (CPU Zone): Primary CPU, secondary GPU max
-    - Fan 3 (GPU2 Zone): Primary GPU1, secondary GPU0, tertiary CPU
-    - Fan 4 (GPU1 Zone): Primary GPU0, secondary GPU1, tertiary CPU
-    - Fan 1 (Blower): MAX of all zones
+    Zone assignments (verified 2026-01-02):
+    - Fan 2 (GPU0 Zone): Primary GPU0, secondary GPU1, tertiary CPU
+    - Fan 3 (GPU1 Zone): Primary GPU1, secondary GPU0, tertiary CPU
+    - Fan 4 (CPU Zone): Primary CPU, secondary GPU max
+    - Fan 1 (Blower): Apple automatic control
     """
 
     def __init__(self, config: Config, fan_controller: FanController,
@@ -494,23 +512,35 @@ class ZoneController:
                 f"CPU={cpu_temp:.1f}, GPU0={gpu0_temp:.1f}, GPU1={gpu1_temp:.1f}"
             )
 
-        # Calculate curve percentages
+        # Get GPU fan speeds if in follow mode
+        gpu0_fan_pct, gpu1_fan_pct, fan_stale = self.gpu_receiver.get_fan_speeds()
+
+        # Calculate curve percentages (fallback if no fan data)
         cpu_pct = self.config.CPU_CURVE.get_percent(cpu_temp)
-        gpu0_pct = self.config.GPU_CURVE.get_percent(gpu0_temp)
-        gpu1_pct = self.config.GPU_CURVE.get_percent(gpu1_temp)
+
+        if Config.GPU_FAN_FOLLOW_MODE and gpu0_fan_pct is not None and gpu1_fan_pct is not None and not fan_stale:
+            # Use actual GPU fan speeds directly
+            gpu0_pct = gpu0_fan_pct
+            gpu1_pct = gpu1_fan_pct
+            self.logger.debug(f"Following GPU fan speeds: GPU0={gpu0_pct:.0f}%, GPU1={gpu1_pct:.0f}%")
+        else:
+            # Fall back to temperature curves
+            gpu0_pct = self.config.GPU_CURVE.get_percent(gpu0_temp)
+            gpu1_pct = self.config.GPU_CURVE.get_percent(gpu1_temp)
+
         gpu_max_pct = max(gpu0_pct, gpu1_pct)
 
-        # Calculate zone percentages with bleed-over
+        # Calculate zone percentages with bleed-over (verified 2026-01-02)
         zone_percents = {}
 
-        # Fan 2 (CPU Zone): 80% CPU, 20% max GPU
-        zone_percents[2] = (0.80 * cpu_pct) + (0.20 * gpu_max_pct)
+        # Fan 2 (GPU0 Zone): 70% GPU0, 20% GPU1, 10% CPU
+        zone_percents[2] = (0.70 * gpu0_pct) + (0.20 * gpu1_pct) + (0.10 * cpu_pct)
 
-        # Fan 3 (GPU2 Zone): 70% GPU1, 20% GPU0, 10% CPU
+        # Fan 3 (GPU1 Zone): 70% GPU1, 20% GPU0, 10% CPU
         zone_percents[3] = (0.70 * gpu1_pct) + (0.20 * gpu0_pct) + (0.10 * cpu_pct)
 
-        # Fan 4 (GPU1 Zone): 70% GPU0, 20% GPU1, 10% CPU
-        zone_percents[4] = (0.70 * gpu0_pct) + (0.20 * gpu1_pct) + (0.10 * cpu_pct)
+        # Fan 4 (CPU Zone): 80% CPU, 20% max GPU
+        zone_percents[4] = (0.80 * cpu_pct) + (0.20 * gpu_max_pct)
 
         # Fan 1 (Blower) is left in Apple automatic mode - not controlled here
 

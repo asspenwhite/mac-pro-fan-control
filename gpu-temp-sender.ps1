@@ -1,20 +1,22 @@
 <#
 .SYNOPSIS
-    GPU Temperature Sender for Mac Pro Rack Fan Control System
+    GPU Temperature and Fan Speed Sender for Mac Pro Rack Fan Control System
 
 .DESCRIPTION
-    Reads temperatures from NVIDIA GPUs using nvidia-smi and sends them via UDP
+    Reads temperatures AND fan speeds from NVIDIA GPUs using nvidia-smi and sends them via UDP
     to the Linux host running the fan control daemon.
 
     Sends JSON payload:
     {
         "gpu0_temp": 65,
-        "gpu1_temp": 67
+        "gpu1_temp": 67,
+        "gpu0_fan": 45,
+        "gpu1_fan": 48
     }
 
 .PARAMETER TargetIP
     IP address of the Linux host running fan-controller.py
-    Default: 192.168.137.2 (Mac Pro Rack Proxmox host)
+    Default: 192.168.1.188 (Mac Pro Rack Proxmox host)
 
 .PARAMETER TargetPort
     UDP port to send temperature data to
@@ -22,13 +24,13 @@
 
 .PARAMETER Interval
     Polling interval in seconds
-    Default: 2
+    Default: 0.5 (matches Proxmox fan controller)
 
 .PARAMETER Verbose
     Enable verbose output
 
 .EXAMPLE
-    .\gpu-temp-sender.ps1 -TargetIP "192.168.1.100" -Interval 2
+    .\gpu-temp-sender.ps1 -TargetIP "192.168.1.188" -Interval 0.5
 
 .NOTES
     Requires nvidia-smi to be in PATH or NVIDIA drivers installed.
@@ -37,13 +39,13 @@
 
 param(
     [Parameter()]
-    [string]$TargetIP = "192.168.137.2",
+    [string]$TargetIP = "192.168.1.188",
 
     [Parameter()]
     [int]$TargetPort = 9999,
 
     [Parameter()]
-    [int]$Interval = 2,
+    [double]$Interval = 0.5,
 
     [Parameter()]
     [switch]$VerboseOutput
@@ -98,52 +100,53 @@ function Write-Log {
     }
 }
 
-function Get-GPUTemperatures {
+function Get-GPUData {
     <#
     .SYNOPSIS
-        Query nvidia-smi for GPU temperatures
+        Query nvidia-smi for GPU temperatures and fan speeds
     .OUTPUTS
-        Hashtable with gpu0_temp and gpu1_temp (or $null on error)
+        Hashtable with gpu0_temp, gpu1_temp, gpu0_fan, gpu1_fan (or $null on error)
     #>
 
     try {
-        # Query temperature for all GPUs
-        # Format: index, temperature.gpu (just the number)
-        $output = & $Script:NvidiaSmi --query-gpu=index,temperature.gpu --format=csv,noheader,nounits 2>&1
+        $output = & $Script:NvidiaSmi --query-gpu=index,temperature.gpu,fan.speed --format=csv,noheader,nounits 2>&1
 
         if ($LASTEXITCODE -ne 0) {
             Write-Log "nvidia-smi returned error code $LASTEXITCODE" -Level "ERROR"
             return $null
         }
 
-        $temps = @{}
+        $data = @{}
 
-        # Parse each line: "0, 65" or "1, 67"
         $lines = $output -split "`n" | Where-Object { $_.Trim() -ne "" }
 
         foreach ($line in $lines) {
             $parts = $line -split ",\s*"
-            if ($parts.Count -ge 2) {
+            if ($parts.Count -ge 3) {
                 $index = [int]$parts[0].Trim()
                 $temp = [int]$parts[1].Trim()
-                $temps["gpu${index}_temp"] = $temp
+                $fan = [int]$parts[2].Trim()
+                $data["gpu${index}_temp"] = $temp
+                $data["gpu${index}_fan"] = $fan
             }
         }
 
         # Ensure we have both GPUs
-        if (-not $temps.ContainsKey("gpu0_temp")) {
-            Write-Log "GPU 0 temperature not found" -Level "WARN"
-            $temps["gpu0_temp"] = 60  # Default safe value
+        if (-not $data.ContainsKey("gpu0_temp")) {
+            Write-Log "GPU 0 data not found" -Level "WARN"
+            $data["gpu0_temp"] = 60
+            $data["gpu0_fan"] = 30
         }
-        if (-not $temps.ContainsKey("gpu1_temp")) {
-            Write-Log "GPU 1 temperature not found" -Level "WARN"
-            $temps["gpu1_temp"] = 60  # Default safe value
+        if (-not $data.ContainsKey("gpu1_temp")) {
+            Write-Log "GPU 1 data not found" -Level "WARN"
+            $data["gpu1_temp"] = 60
+            $data["gpu1_fan"] = 30
         }
 
-        return $temps
+        return $data
 
     } catch {
-        Write-Log "Failed to query GPU temperatures: $_" -Level "ERROR"
+        Write-Log "Failed to query GPU data: $_" -Level "ERROR"
         return $null
     }
 }
@@ -168,13 +171,8 @@ function Send-UDPPacket {
 }
 
 function Start-TempSender {
-    <#
-    .SYNOPSIS
-        Main loop to read and send GPU temperatures
-    #>
-
     Write-Log "=========================================="
-    Write-Log "GPU Temperature Sender Starting"
+    Write-Log "GPU Temperature & Fan Speed Sender Starting"
     Write-Log "=========================================="
     Write-Log "Target: ${TargetIP}:${TargetPort}"
     Write-Log "Interval: ${Interval}s"
@@ -191,60 +189,47 @@ function Start-TempSender {
         Write-Log "Could not query GPU info: $_" -Level "WARN"
     }
 
-    Write-Log "Starting temperature monitoring loop..."
+    Write-Log "Starting temperature/fan monitoring loop..."
     Write-Log "Press Ctrl+C to stop"
 
-    # Register Ctrl+C handler
-    $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
-        $Script:Running = $false
-    }
-
-    try {
-        [Console]::TreatControlCAsInput = $false
-    } catch {
-        # May not work in all environments
-    }
-
-    $lastTemps = @{}
+    $lastData = @{}
     $sendCount = 0
     $errorCount = 0
 
     while ($Script:Running) {
         $loopStart = Get-Date
 
-        # Read temperatures
-        $temps = Get-GPUTemperatures
+        $data = Get-GPUData
 
-        if ($temps) {
-            # Create JSON payload
+        if ($data) {
             $payload = @{
-                gpu0_temp = $temps["gpu0_temp"]
-                gpu1_temp = $temps["gpu1_temp"]
+                gpu0_temp = $data["gpu0_temp"]
+                gpu1_temp = $data["gpu1_temp"]
+                gpu0_fan = $data["gpu0_fan"]
+                gpu1_fan = $data["gpu1_fan"]
             } | ConvertTo-Json -Compress
 
-            # Send via UDP
             $sent = Send-UDPPacket -Data $payload -IP $TargetIP -Port $TargetPort
 
             if ($sent) {
                 $sendCount++
 
-                # Log if temperatures changed significantly
                 $changed = $false
-                foreach ($key in $temps.Keys) {
-                    if (-not $lastTemps.ContainsKey($key) -or
-                        [Math]::Abs($temps[$key] - $lastTemps[$key]) -ge 2) {
+                foreach ($key in $data.Keys) {
+                    if (-not $lastData.ContainsKey($key) -or
+                        [Math]::Abs($data[$key] - $lastData[$key]) -ge 2) {
                         $changed = $true
                         break
                     }
                 }
 
-                if ($changed -or ($sendCount % 30 -eq 0)) {
-                    Write-Log "Sent: GPU0=$($temps['gpu0_temp'])C, GPU1=$($temps['gpu1_temp'])C"
+                if ($changed -or ($sendCount % 60 -eq 0)) {
+                    Write-Log "Sent: GPU0=$($data['gpu0_temp'])C/$($data['gpu0_fan'])%, GPU1=$($data['gpu1_temp'])C/$($data['gpu1_fan'])%"
                 } else {
-                    Write-Log "Sent: GPU0=$($temps['gpu0_temp'])C, GPU1=$($temps['gpu1_temp'])C" -Level "DEBUG"
+                    Write-Log "Sent: GPU0=$($data['gpu0_temp'])C/$($data['gpu0_fan'])%, GPU1=$($data['gpu1_temp'])C/$($data['gpu1_fan'])%" -Level "DEBUG"
                 }
 
-                $lastTemps = $temps.Clone()
+                $lastData = $data.Clone()
                 $errorCount = 0
             } else {
                 $errorCount++
@@ -259,24 +244,10 @@ function Start-TempSender {
             }
         }
 
-        # Sleep for remaining interval
         $elapsed = ((Get-Date) - $loopStart).TotalSeconds
         $sleepTime = [Math]::Max(0, $Interval - $elapsed)
         if ($sleepTime -gt 0) {
             Start-Sleep -Milliseconds ($sleepTime * 1000)
-        }
-
-        # Check for Ctrl+C (only works with interactive console)
-        try {
-            if ([Console]::KeyAvailable) {
-                $key = [Console]::ReadKey($true)
-                if ($key.Key -eq "C" -and $key.Modifiers -eq "Control") {
-                    Write-Log "Ctrl+C detected, stopping..."
-                    $Script:Running = $false
-                }
-            }
-        } catch {
-            # Ignore - console not available when running as scheduled task or in background
         }
     }
 
@@ -289,22 +260,15 @@ function Start-TempSender {
 # =============================================================================
 
 function Install-AsScheduledTask {
-    <#
-    .SYNOPSIS
-        Install this script as a scheduled task that runs at startup
-    #>
-
-    $taskName = "GPUTempSender"
+    $taskName = "GPU Temp Sender"
     $scriptPath = $MyInvocation.PSCommandPath
 
-    # Check if already installed
     $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     if ($existingTask) {
         Write-Log "Task '$taskName' already exists. Removing..." -Level "WARN"
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
     }
 
-    # Create the task
     $action = New-ScheduledTaskAction `
         -Execute "powershell.exe" `
         -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" -TargetIP `"$TargetIP`" -TargetPort $TargetPort -Interval $Interval"
@@ -325,7 +289,7 @@ function Install-AsScheduledTask {
         -Trigger $trigger `
         -Principal $principal `
         -Settings $settings `
-        -Description "Sends GPU temperatures to Mac Pro Rack fan controller"
+        -Description "Sends GPU temperatures and fan speeds to Mac Pro Rack fan controller"
 
     Write-Log "Scheduled task '$taskName' created successfully"
     Write-Log "The task will start automatically at boot"
@@ -333,12 +297,7 @@ function Install-AsScheduledTask {
 }
 
 function Uninstall-ScheduledTask {
-    <#
-    .SYNOPSIS
-        Remove the scheduled task
-    #>
-
-    $taskName = "GPUTempSender"
+    $taskName = "GPU Temp Sender"
 
     $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     if ($existingTask) {
@@ -354,7 +313,6 @@ function Uninstall-ScheduledTask {
 # Main Entry Point
 # =============================================================================
 
-# Handle special commands
 if ($args -contains "-Install") {
     Install-AsScheduledTask
     exit 0
@@ -365,5 +323,4 @@ if ($args -contains "-Uninstall") {
     exit 0
 }
 
-# Normal operation
 Start-TempSender
