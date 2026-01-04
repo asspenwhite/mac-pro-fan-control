@@ -5,7 +5,8 @@ Advanced per-zone fan control system for Apple Mac Pro 2019 (Rack or Tower) runn
 ## Features
 
 - **Per-Zone Fan Control** - Independent control of each intake fan based on thermal zones
-- **GPU Fan Follow Mode** - Chassis fans match GPU fan speeds for optimal cooling during benchmarks
+- **GPU Fan Follow Mode** - Optional: chassis fans match GPU fan speeds (disabled by default)
+- **Quiet Idle** - 10% minimum fan speed (~800 RPM) for near-silent operation
 - **GPU Temperature Integration** - Receives GPU temps and fan speeds from Windows/Linux VMs
 - **Zone Bleed-Over** - Accounts for thermal cross-contamination between zones (e.g., NVLink heat sharing)
 - **Configurable Fan Curves** - Linear interpolation between temperature/speed points
@@ -152,23 +153,24 @@ curves:
 # Safety settings
 safety:
   emergency_temp: 85.0    # All fans to 100% above this
-  min_fan_percent: 20.0   # Never go below this
+  min_fan_percent: 10.0   # Quiet idle (~800 RPM)
 
 # Hysteresis (prevents oscillation)
 hysteresis:
   up: 2.0    # Temp must rise 2C before speeding up
   down: 2.0  # Temp must fall 2C before slowing down
 
-# GPU Fan Follow Mode (default: enabled)
-# When enabled, chassis fans match GPU fan speeds instead of using temp curves
+# GPU Fan Follow Mode (default: disabled for quiet idle)
 system:
-  gpu_fan_follow_mode: true
+  gpu_fan_follow_mode: false
   poll_interval: 0.5  # Seconds between updates
 ```
 
 ### GPU Fan Follow Mode
 
-When `gpu_fan_follow_mode: true` (default), the chassis fans directly follow the GPU fan speeds reported by nvidia-smi, with zone weights still applied. This provides better cooling correlation during GPU-intensive workloads like benchmarks or gaming, since the GPU's own fan controller knows best what cooling is needed.
+When `gpu_fan_follow_mode: true`, the chassis fans directly follow the GPU fan speeds reported by nvidia-smi, with zone weights still applied. This provides better cooling correlation during GPU-intensive workloads.
+
+**Default: Disabled** - Temperature curves provide more predictable quiet idle behavior.
 
 The Windows sender now transmits both temperature AND fan speed:
 ```json

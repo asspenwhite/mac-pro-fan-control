@@ -46,7 +46,7 @@ class FanConfig:
     sysfs_id: int  # fan1, fan2, etc.
     min_rpm: int
     max_rpm: int
-    min_percent: float = 20.0  # Minimum speed percentage
+    min_percent: float = 10.0  # Minimum speed percentage
 
 @dataclass
 class ThermalCurve:
@@ -97,7 +97,8 @@ class Config:
     UDP_PORT = 9999
 
     # GPU Fan Follow Mode - use GPU fan speed instead of temperature curves
-    GPU_FAN_FOLLOW_MODE = True
+    # Disabled: use temperature curves for predictable idle behavior
+    GPU_FAN_FOLLOW_MODE = False
 
     # Timing
     POLL_INTERVAL = 0.5  # seconds (faster response to GPU fan changes)
@@ -115,26 +116,26 @@ class Config:
     # Fan configurations (verified 2026-01-02)
     # Fan 1 (Rear Blower) is left in Apple automatic mode - not controlled here
     FANS = {
-        2: FanConfig("Right Front (GPU0)", 2, 500, 2500, min_percent=20.0),
-        3: FanConfig("Middle Front (GPU1)", 3, 500, 2500, min_percent=20.0),
-        4: FanConfig("Left Front (CPU)", 4, 500, 2500, min_percent=20.0),
+        2: FanConfig("Right Front (GPU0)", 2, 500, 2500, min_percent=10.0),
+        3: FanConfig("Middle Front (GPU1)", 3, 500, 2500, min_percent=10.0),
+        4: FanConfig("Left Front (CPU)", 4, 500, 2500, min_percent=10.0),
     }
 
     # Thermal curves (temperature -> percentage)
     # CPU curve adapted for Xeon W-3245
     CPU_CURVE = ThermalCurve([
-        (30.0, 20.0),
-        (40.0, 30.0),
-        (50.0, 45.0),
-        (60.0, 80.0),
-        (65.0, 90.0),
+        (30.0, 10.0),   # Quiet idle
+        (40.0, 20.0),
+        (50.0, 40.0),
+        (60.0, 70.0),
+        (65.0, 85.0),
         (80.0, 100.0),
     ])
 
     # GPU curve adapted for RTX 3090 (runs hotter than 5090)
     GPU_CURVE = ThermalCurve([
-        (35.0, 20.0),   # Minimum 20% even at idle
-        (50.0, 30.0),
+        (35.0, 10.0),   # Quiet idle
+        (50.0, 25.0),
         (65.0, 50.0),
         (75.0, 75.0),
         (83.0, 100.0),
