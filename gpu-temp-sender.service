@@ -1,0 +1,13 @@
+[Unit]
+Description=Send GPU temps to Proxmox fan controller
+After=multi-user.target
+ConditionPathExists=/proc/driver/nvidia/version
+
+[Service]
+ExecStart=%h/bin/gpu-temp-sender.sh
+User=%i
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

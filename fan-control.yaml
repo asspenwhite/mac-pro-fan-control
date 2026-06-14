@@ -1,0 +1,132 @@
+# =============================================================================
+# Mac Pro Rack Fan Control Configuration
+# =============================================================================
+# Copy to /etc/fan-control/config.yaml for production use.
+# Fan zone mapping verified 2026-01-02
+# =============================================================================
+
+system:
+  smc_base: "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/PNP0A08:00/device:1f/APP0001:00"
+  udp_host: "0.0.0.0"
+  udp_port: 9999
+  poll_interval: 0.5
+  gpu_stale_timeout: 10.0
+  gpu_fan_follow_mode: false  # Use temp curves for predictable idle
+  log_file: "/var/log/fan-control/fan-control.log"
+  log_level: "INFO"
+
+safety:
+  emergency_temp: 85.0
+  default_cpu_temp: 50.0
+  default_gpu_temp: 60.0
+  min_fan_percent: 10.0
+
+hysteresis:
+  up: 2.0
+  down: 2.0
+
+# =============================================================================
+# Fan Hardware Configuration (verified 2026-01-02)
+# =============================================================================
+fans:
+  1:
+    name: "Rear Blower"
+    min_rpm: 500
+    max_rpm: 1200
+    zone: "exhaust"
+    control: "auto"  # Apple automatic
+
+  2:
+    name: "Right Front (GPU0)"
+    min_rpm: 500
+    max_rpm: 2500
+    zone: "gpu0"
+    pci: "0000:01:00"   # set to your GPU0 PCI address (nvidia-smi --query-gpu=pci.bus_id)
+
+  3:
+    name: "Middle Front (GPU1)"
+    min_rpm: 500
+    max_rpm: 2500
+    zone: "gpu1"
+    pci: "0000:02:00"   # set to your GPU1 PCI address (nvidia-smi --query-gpu=pci.bus_id)
+
+  4:
+    name: "Left Front (CPU)"
+    min_rpm: 500
+    max_rpm: 2500
+    zone: "cpu"
+
+# =============================================================================
+# Zone Bleed-Over Weights
+# =============================================================================
+zone_weights:
+  fan2:  # GPU0 Zone
+    gpu0: 0.70
+    gpu1: 0.20
+    cpu: 0.10
+
+  fan3:  # GPU1 Zone
+    gpu1: 0.70
+    gpu0: 0.20
+    cpu: 0.10
+
+  fan4:  # CPU Zone
+    cpu: 0.80
+    gpu_max: 0.20
+
+  fan1:
+    mode: "auto"
+
+# =============================================================================
+# Temperature Curves
+# =============================================================================
+curves:
+  cpu:  # Intel Xeon W-3245
+    - [30.0, 10.0]
+    - [40.0, 20.0]
+    - [50.0, 40.0]
+    - [60.0, 70.0]
+    - [65.0, 85.0]
+    - [80.0, 100.0]
+
+  gpu:  # NVIDIA GPU
+    - [35.0, 10.0]
+    - [50.0, 25.0]
+    - [65.0, 50.0]
+    - [75.0, 75.0]
+    - [83.0, 100.0]
+
+profiles:
+  default:
+    description: "Balanced noise/cooling"
+    cpu_curve: "cpu"
+    gpu_curve: "gpu"
+
+  silent:
+    description: "Prioritize silence"
+    cpu_curve:
+      - [30.0, 10.0]
+      - [50.0, 20.0]
+      - [60.0, 35.0]
+      - [70.0, 60.0]
+      - [80.0, 100.0]
+    gpu_curve:
+      - [35.0, 10.0]
+      - [60.0, 25.0]
+      - [75.0, 50.0]
+      - [83.0, 100.0]
+
+  performance:
+    description: "Aggressive cooling"
+    cpu_curve:
+      - [30.0, 30.0]
+      - [40.0, 50.0]
+      - [50.0, 70.0]
+      - [60.0, 90.0]
+      - [70.0, 100.0]
+    gpu_curve:
+      - [35.0, 30.0]
+      - [50.0, 50.0]
+      - [60.0, 70.0]
+      - [70.0, 90.0]
+      - [80.0, 100.0]
